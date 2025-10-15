@@ -2,13 +2,12 @@
 /**
  * remap-rolling.js — column-aligned, UTC-safe, selectable alignment
  *
- * What it does
- * - Reads a github-painter-style template.sh (with 2019 dates in echo/commit lines)
+ * - Reads a github-painter-style template.sh (2019 dates in echo/commit lines)
  * - Strips nested `git init/remote/pull/cd` so painting happens in the repo root
  * - Maps dates by (week column, weekday row) into the profile’s rolling grid
  * - Uses 53 visible weeks (GitHub’s profile grid width)
  * - Emits all commit dates as 12:00:00 GMT+0000 (UTC) to avoid DST shearing
- * - Alignment: 'left' | 'center' | 'right' (default 'left' for your layout)
+ * - Alignment: 'left' | 'center' | 'right'  (default 'left')
  *
  * Usage: node remap-rolling.js template.sh > paint.sh
  */
@@ -45,4 +44,125 @@ function fmtUTCNoon(dayUTCms) {
   const mon = MON[d.getUTCMonth()];
   const dd  = String(d.getUTCDate()).padStart(2, "0");
   const yyyy= d.getUTCFullYear();
-  return `${d
+  return `${dow} ${mon} ${dd} ${yyyy} 12:00:00 GMT+0000 (UTC)`;
+}
+
+const toColRow   = i => ({ col: Math.floor(i / 7), row: i % 7 });
+const fromColRow = (c, r) => c * 7 + r;
+
+function main() {
+  const path = process.argv[2];
+  if (!path) {
+    console.error("Usage: node remap-rolling.js template.sh > paint.sh");
+    process.exit(2);
+  }
+
+  let input = fs.readFileSync(path, "utf8");
+
+  // --- Sanitize template: paint in repo root (no nested repo/network) ---
+  [
+    /^mkdir\s+github_painter.*$/gm,
+    /^cd\s+github_painter.*$/gm,
+    /^git\s+init.*$/gm,
+    /^git\s+remote\s+add\s+origin.*$/gm,
+    /^git\s+pull\s+origin.*$/gm
+  ].forEach(re => (input = input.replace(re, "")));
+
+  // Gather original (2019) message dates as anchor points
+  const msgRe = new RegExp(
+    String.raw`(?:^|\n)git\s+commit\s+--date='[^']*'\s+-m\s+'(` + FULL_2019.source + String.raw`)'`,
+    "gm"
+  );
+  const msgs = [];
+  for (let m; (m = msgRe.exec(input)) !== null; ) msgs.push(m[1]);
+  if (!msgs.length) {
+    // Nothing to map; pass through
+    process.stdout.write(input);
+    return;
+  }
+
+  // Day indices from the 2019 grid start
+  const start2019 = gridStartUTC(2019);
+  const idxs = msgs.map(s => Math.floor((parseFullDayUTC(s) - start2019) / 86400000));
+  const colRows = idxs.map(toColRow);
+  const minCol  = Math.min(...colRows.map(p => p.col));
+  const maxCol  = Math.max(...colRows.map(p => p.col));
+  const width   = maxCol - minCol + 1; // columns used by drawing
+
+  // --- Profile grid window: 53 visible weeks ---
+  const GRID_WEEKS = 53;
+  const now = new Date();
+  const todayUTC   = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const thisSunUTC = weekStartUTC(todayUTC);
+  const windowStartUTC = thisSunUTC - (GRID_WEEKS - 1) * 7 * 86400000; // leftmost column (Sunday)
+  const rightmostCol   = GRID_WEEKS - 1;                                // current week column
+  const todayRow       = new Date(todayUTC).getUTCDay();                // 0=Sun..6=Sat
+
+  if (width > GRID_WEEKS) {
+    throw new Error(
+      `Drawing uses ${width} columns but the rolling window only shows ${GRID_WEEKS}. ` +
+      "Trim or shift the template before remapping."
+    );
+  }
+
+  // ================== ALIGNMENT ==================
+  // Choose: 'left' | 'center' | 'right'
+  const ALIGN = 'left';   // left-align earliest drawing column to the window start
+
+  let shiftCols;
+  if (ALIGN === 'left') {
+    // Earliest drawing column -> left edge of window
+    shiftCols = 0 - minCol;
+  } else if (ALIGN === 'right') {
+    // Latest drawing column -> current week column
+    shiftCols = rightmostCol - maxCol;
+  } else {
+    // 'center' — center columns within the 53-week window
+    shiftCols = Math.floor((GRID_WEEKS - width) / 2) - minCol;
+  }
+
+  // Clamp inside [0 .. rightmostCol]
+  shiftCols = Math.max(shiftCols, -minCol);
+  shiftCols = Math.min(shiftCols, rightmostCol - maxCol);
+
+  // Avoid placing pixels in *future* days of the current (rightmost) column
+  const violatesFuture = p => (p.col + shiftCols === rightmostCol) && (p.row > todayRow);
+  while (colRows.some(violatesFuture) && (minCol + shiftCols > 0)) {
+    shiftCols -= 1; // nudge left by one column until all rightmost pixels are <= todayRow
+  }
+  if (colRows.some(violatesFuture)) {
+    throw new Error(
+      "Cannot align drawing without using future days in the current week. " +
+      "Adjust the template to land earlier."
+    );
+  }
+
+  // Remapper: move by columns/rows; output noon-UTC string
+  function remapOne(fullStr) {
+    const oldIdx = Math.floor((parseFullDayUTC(fullStr) - start2019) / 86400000);
+    const { col, row } = toColRow(oldIdx);
+    const newIdxFromWindow = fromColRow(col + shiftCols, row);     // >= 0 by construction
+    const newDayUTC = windowStartUTC + newIdxFromWindow * 86400000;
+    return fmtUTCNoon(newDayUTC);
+  }
+
+  // Replace echo line dates
+  const echoRe = new RegExp(
+    String.raw`(echo\s+')(` + FULL_2019.source + String.raw`)('\s*>>\s*[^\n]+)`,
+    "g"
+  );
+  input = input.replace(echoRe, (_, a, date, tail) => a + remapOne(date) + tail);
+
+  // Replace both --date and -m using the message date as source of truth
+  const commitRe = new RegExp(
+    String.raw`(git\s+commit\s+--date=')([^']*)('\s+-m\s+')(` + FULL_2019.source + String.raw`)(')`,
+    "g"
+  );
+  input = input.replace(commitRe, (_, a, anyDate, b, msgDate, e) => {
+    const mapped = remapOne(msgDate);
+    return a + mapped + b + mapped + e;
+  });
+
+  process.stdout.write(input);
+}
+main();
