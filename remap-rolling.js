@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /**
- * remap-rolling.js (right-anchored, UTC-safe)
+ * remap-rolling.js (centered, UTC-safe)
  * - Strips nested repo/network lines from the template.
- * - Maps the original *latest* 2019 date to *today* (UTC),
- *   then shifts left only if needed to fit inside the last 52 weeks.
+ * - Centers the art within the last 52 weeks of activity (UTC-based window).
  * - Emits all dates as 12:00:00 GMT+0000 (UTC) to avoid DST rollovers.
  *
  * Usage: node remap-rolling.js template.sh > paint.sh
@@ -13,6 +12,8 @@ const fs = require('fs');
 const fullDateRe =
   /[A-Z][a-z]{2}\s[A-Z][a-z]{2}\s\d{2}\s2019\s\d{2}:\d{2}:\d{2}\sGMT[+-]\d{4}\s\([^)]+\)/g;
 const DAY = 86400000;
+const WINDOW_WEEKS = 52;
+const WINDOW_DAYS = WINDOW_WEEKS * 7;
 
 function weekSunday(dUTCms) {
   const d = new Date(dUTCms);
@@ -71,20 +72,31 @@ function main() {
   // Rolling window: last 52 weeks ending today (UTC)
   const now = new Date();
   const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const windowStart = weekSunday(todayUTC) - 52*7*DAY;      // inclusive start
+  const windowStart = weekSunday(todayUTC) - WINDOW_DAYS*DAY; // inclusive start
 
-  // Right-anchor: map original latest day -> today, then nudge earlier if we overflow the window.
-  const baseLatest = start2019 + maxIdx*DAY;
-  let anchor = todayUTC;
-  const earliestCandidate = anchor + (minIdx - maxIdx) * DAY;
-  if (earliestCandidate < windowStart) {
-    anchor -= (windowStart - earliestCandidate); // shift left to keep earliest within window
+  // Center the art within the rolling window when possible.
+  const baseEarliest = start2019 + minIdx*DAY;
+  const artDays = maxIdx - minIdx + 1;
+  let anchorEarliest = windowStart;
+  if (artDays < WINDOW_DAYS) {
+    const freeDays = WINDOW_DAYS - artDays;
+    const leftPad = Math.floor(freeDays / 2);
+    anchorEarliest += leftPad * DAY;
+  }
+
+  const windowEnd = windowStart + (WINDOW_DAYS - 1) * DAY;
+  const maxAnchor = windowEnd - (artDays - 1) * DAY;
+  if (maxAnchor >= windowStart) {
+    if (anchorEarliest > maxAnchor) anchorEarliest = maxAnchor;
+    if (anchorEarliest < windowStart) anchorEarliest = windowStart;
+  } else {
+    anchorEarliest = maxAnchor;
   }
 
   function remap(fullStr) {
     const oldDay = parseFullDayUTC(fullStr);
-    const offset = Math.floor((oldDay - baseLatest) / DAY);
-    const newDay = anchor + offset * DAY;
+    const offset = Math.floor((oldDay - baseEarliest) / DAY);
+    const newDay = anchorEarliest + offset * DAY;
     return fmtFullUTCNoon(newDay);
   }
 
