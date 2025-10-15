@@ -29,7 +29,7 @@ jobs:
 
       - name: Generate rolling script (UTC-safe)
         run: |
-          node ./remap-rolling.js ./template.sh > paint.sh
+          node ./remap-rolling.js --align=right ./template.sh > paint.sh
           chmod +x paint.sh
           cp paint.sh /tmp/paint.sh
 

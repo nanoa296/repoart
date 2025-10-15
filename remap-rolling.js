@@ -7,9 +7,9 @@
  * - Maps dates by (week column, weekday row) into the profile’s rolling grid
  * - Uses 53 visible weeks (GitHub’s profile grid width)
  * - Emits all commit dates as 12:00:00 GMT+0000 (UTC) to avoid DST shearing
- * - Alignment: 'left' | 'center' | 'right'  (default 'left')
+ * - Alignment: 'left' | 'center' | 'right'  (default 'left', override with --align flag)
  *
- * Usage: node remap-rolling.js template.sh > paint.sh
+ * Usage: node remap-rolling.js [--align=left|center|right] template.sh > paint.sh
  */
 
 const fs = require("fs");
@@ -50,10 +50,26 @@ function fmtUTCNoon(dayUTCms) {
 const toColRow   = i => ({ col: Math.floor(i / 7), row: i % 7 });
 const fromColRow = (c, r) => c * 7 + r;
 
+function parseArgs(argv) {
+  const args = { align: "left" };
+  for (const arg of argv.slice(2)) {
+    if (arg.startsWith("--align=")) {
+      args.align = arg.slice("--align=".length).toLowerCase();
+    } else if (!args.template) {
+      args.template = arg;
+    }
+  }
+  return args;
+}
+
 function main() {
-  const path = process.argv[2];
+  const { template: path, align } = parseArgs(process.argv);
   if (!path) {
-    console.error("Usage: node remap-rolling.js template.sh > paint.sh");
+    console.error("Usage: node remap-rolling.js [--align=left|center|right] template.sh > paint.sh");
+    process.exit(2);
+  }
+  if (!["left", "center", "right"].includes(align)) {
+    console.error("Align must be one of: left, center, right");
     process.exit(2);
   }
 
@@ -106,14 +122,11 @@ function main() {
   }
 
   // ================== ALIGNMENT ==================
-  // Choose: 'left' | 'center' | 'right'
-  const ALIGN = 'left';   // left-align earliest drawing column to the window start
-
   let shiftCols;
-  if (ALIGN === 'left') {
+  if (align === "left") {
     // Earliest drawing column -> left edge of window
     shiftCols = 0 - minCol;
-  } else if (ALIGN === 'right') {
+  } else if (align === "right") {
     // Latest drawing column -> current week column
     shiftCols = rightmostCol - maxCol;
   } else {
@@ -147,11 +160,10 @@ function main() {
   }
 
   // Replace echo line dates
-  const echoRe = new RegExp(
-    String.raw`(echo\s+')(` + FULL_2019.source + String.raw`)('\s*>>\s*[^\n]+)`,
-    "g"
+  input = input.replace(
+    /^echo\s+'.*$/gm,
+    line => line.replace(FULL_2019, remapOne)
   );
-  input = input.replace(echoRe, (_, a, date, tail) => a + remapOne(date) + tail);
 
   // Replace both --date and -m using the message date as source of truth
   const commitRe = new RegExp(
