@@ -12,16 +12,17 @@ const fs = require('fs');
 
 const fullDateRe =
   /[A-Z][a-z]{2}\s[A-Z][a-z]{2}\s\d{2}\s2019\s\d{2}:\d{2}:\d{2}\sGMT[+-]\d{4}\s\([^)]+\)/g;
+const DAY = 86400000;
 
 function weekSunday(dUTCms) {
   const d = new Date(dUTCms);
   const wd = d.getUTCDay();               // 0=Sun..6=Sat
-  return dUTCms - wd * 86400000;          // back to Sunday 00:00 UTC
+  return dUTCms - wd * DAY;               // back to Sunday 00:00 UTC
 }
 function gridStart(year) {
   const jan1 = Date.UTC(year, 0, 1);
   const wd = new Date(jan1).getUTCDay();
-  return jan1 - wd * 86400000;            // Sunday on/before Jan 1
+  return jan1 - wd * DAY;                 // Sunday on/before Jan 1
 }
 // Parse ONLY the date part; ignore whatever offset the template had.
 function parseFullDayUTC(s) {
@@ -63,31 +64,27 @@ function main() {
   if (!msgs.length) { process.stdout.write(input); return; }
 
   const start2019 = gridStart(2019);
-  const idxs = msgs.map(s => Math.floor((parseFullDayUTC(s) - start2019)/86400000));
+  const idxs = msgs.map(s => Math.floor((parseFullDayUTC(s) - start2019)/DAY));
   const minIdx = Math.min(...idxs);
   const maxIdx = Math.max(...idxs);
-  const span   = maxIdx - minIdx;
 
   // Rolling window: last 52 weeks ending today (UTC)
-  const todayUTC = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
-  const windowStart = weekSunday(todayUTC) - 52*7*86400000;      // inclusive start
-  const windowEnd   = todayUTC;                                  // inclusive end
+  const now = new Date();
+  const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const windowStart = weekSunday(todayUTC) - 52*7*DAY;      // inclusive start
 
-  // Right-anchor: map original latest day -> today
-  const baseOld = start2019 + minIdx*86400000;
-  let newBase   = todayUTC - (maxIdx * 86400000);
-
-  // If that makes earliest pixel fall before the window, shift right just enough to fit.
-  const earliestNew = newBase + minIdx*86400000;
-  if (earliestNew < windowStart) {
-    newBase += (windowStart - earliestNew);
+  // Right-anchor: map original latest day -> today, then nudge earlier if we overflow the window.
+  const baseLatest = start2019 + maxIdx*DAY;
+  let anchor = todayUTC;
+  const earliestCandidate = anchor + (minIdx - maxIdx) * DAY;
+  if (earliestCandidate < windowStart) {
+    anchor -= (windowStart - earliestCandidate); // shift left to keep earliest within window
   }
-  // (No need to handle >windowEnd; right-anchoring guarantees latest <= today)
 
   function remap(fullStr) {
     const oldDay = parseFullDayUTC(fullStr);
-    const offset = Math.floor((oldDay - baseOld)/86400000);
-    const newDay = newBase + offset*86400000;
+    const offset = Math.floor((oldDay - baseLatest) / DAY);
+    const newDay = anchor + offset * DAY;
     return fmtFullUTCNoon(newDay);
   }
 
